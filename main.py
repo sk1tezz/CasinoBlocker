@@ -1,11 +1,42 @@
+"""
+CasinoBlocker — блокировка сайтов казино.
+Лог отладки: %TEMP%\\casino_blocker.log
+"""
+import sys
+import os
+from datetime import datetime
+
+# Лог в файл — работает даже если скрипт падает до импортов (для отладки Планировщика)
+def _startup_log(msg: str):
+    try:
+        # Папка скрипта — доступна и при запуске из Планировщика
+        script_dir = os.path.dirname(os.path.abspath(sys.argv[0]))
+        path = os.path.join(script_dir, "casino_blocker.log")
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(f"{datetime.now()} | {msg}\n")
+    except Exception:
+        pass
+
+_startup_log(f"START argv={sys.argv} cwd={os.getcwd()} exe={sys.executable}")
+
 from pywinauto import Desktop
 import pygetwindow as gw
 
 from urllib.parse import urlparse
 import subprocess
-import sys
-import os
 import time
+
+_startup_log("Imports OK")
+
+CONSOLE_MODE = "--console" in sys.argv or "-c" in sys.argv
+
+
+def log(msg: str):
+    """Вывод в консоль (виден только при запуске через python.exe, не pythonw)."""
+    if CONSOLE_MODE:
+        ts = datetime.now().strftime("%H:%M:%S")
+        print(f"[{ts}] {msg}", flush=True)
+
 
 KEYWORDS = [
     # Английские
@@ -109,18 +140,32 @@ def setup_scheduler() -> bool:
     Создаёт задачу в планировщике Windows.
     Запуск при входе в систему, с правами администратора, без UAC.
     Первый запуск скрипта — от имени администратора.
+    LogonType=InteractiveToken — задача выполняется в сессии пользователя (видит окна).
     """
     script_path = os.path.abspath(sys.argv[0])
+    script_dir = os.path.dirname(script_path)
     task_name = "CasinoBlocker"
 
-    if script_path.endswith(".py"):
-        pythonw = sys.executable.replace("python.exe", "pythonw.exe")
-        if not os.path.exists(pythonw):
-            pythonw = sys.executable
-        command = f'"{pythonw}" "{script_path}"'
-    else:
-        command = f'"{script_path}"'
+    python_exe = sys.executable if script_path.endswith(".py") else script_path
 
+    # Bat-обёртка: пишет в лог ДО запуска Python — если лог есть, задача хотя бы стартовала
+    bat_path = os.path.join(script_dir, "run_casino_blocker.bat")
+    log_path = os.path.join(script_dir, "casino_blocker.log")
+    bat_content = f'''@echo off
+echo %date% %time% [BAT] Task started >> "{log_path}"
+cd /d "{script_dir}"
+"{python_exe}" "{script_path}" --console
+echo %date% %time% [BAT] Python exited >> "{log_path}"
+'''
+    with open(bat_path, "w", encoding="utf-8") as f:
+        f.write(bat_content)
+
+    # cmd /c — гарантированно есть в Windows, bat пишет лог до Python
+    command = "cmd.exe"
+    arguments = f'/c "{bat_path}"'
+
+    # LogonType=InteractiveToken — задача в сессии пользователя (видит окна), НЕ в Session 0
+    # Delay=PT30S — задержка 30 сек после входа, чтобы рабочий стол успел загрузиться
     xml = f'''<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo>
@@ -129,11 +174,13 @@ def setup_scheduler() -> bool:
   <Triggers>
     <LogonTrigger>
       <Enabled>true</Enabled>
+      <Delay>PT30S</Delay>
     </LogonTrigger>
   </Triggers>
   <Principals>
     <Principal>
       <RunLevel>HighestAvailable</RunLevel>
+      <LogonType>InteractiveToken</LogonType>
     </Principal>
   </Principals>
   <Settings>
@@ -147,6 +194,8 @@ def setup_scheduler() -> bool:
   <Actions>
     <Exec>
       <Command>{command}</Command>
+      <Arguments>{arguments}</Arguments>
+      <WorkingDirectory>{script_dir}</WorkingDirectory>
     </Exec>
   </Actions>
 </Task>'''
@@ -160,8 +209,9 @@ def setup_scheduler() -> bool:
         capture_output=True,
     )
 
+    # /IT — задача только при входе пользователя (интерактивная сессия)
     result = subprocess.run(
-        ["schtasks", "/Create", "/TN", task_name, "/XML", xml_path],
+        ["schtasks", "/Create", "/TN", task_name, "/XML", xml_path, "/IT"],
         capture_output=True,
         text=True,
     )
@@ -171,6 +221,10 @@ def setup_scheduler() -> bool:
     except OSError:
         pass
 
+    if result.returncode == 0:
+        log("Задача в Планировщике создана/обновлена")
+    else:
+        log(f"Ошибка создания задачи: {result.stderr or result.stdout}")
     return result.returncode == 0
 
 
@@ -191,9 +245,11 @@ def block_casino(browser: str):
     if not is_domain_already_blocked(domain):
         add_domain_to_hosts(domain)
         flush_dns()
+        log(f"Заблокирован: {domain}")
 
 
 def main():
+    log("CasinoBlocker запущен, мониторинг окон...")
     while True:
         windows = gw.getAllWindows()
 
@@ -204,13 +260,22 @@ def main():
                     continue
 
                 browser = title_parts[1].strip()
-
                 block_casino(browser)
 
         time.sleep(1)
 
 
 if __name__ == '__main__':
-    # Создаём/обновляем задачу в планировщике (нужны права администратора)
-    setup_scheduler()
-    main()
+    if "--help" in sys.argv or "-h" in sys.argv:
+        print("CasinoBlocker — блокировка сайтов казино")
+        print("  --console, -c   видимое окно CMD с логами (для отладки)")
+        print("  Лог отладки: %TEMP%\\casino_blocker.log")
+        sys.exit(0)
+    try:
+        _startup_log("Calling setup_scheduler")
+        setup_scheduler()
+        _startup_log("Calling main")
+        main()
+    except Exception as e:
+        _startup_log(f"FATAL: {type(e).__name__}: {e}")
+        raise
