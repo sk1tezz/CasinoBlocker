@@ -1,4 +1,5 @@
 @echo off
+pip install -r requirements.txt
 REM Сборка CasinoBlocker в .exe (требуется: pip install pyinstaller)
 pyinstaller --onefile --noconsole --name CasinoBlocker main.py
 echo.
