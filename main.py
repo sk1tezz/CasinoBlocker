@@ -1,9 +1,10 @@
 from pywinauto import Desktop
 import pygetwindow as gw
-import psutil
 
 from urllib.parse import urlparse
 import subprocess
+import sys
+import os
 import time
 
 KEYWORDS = [
@@ -19,7 +20,7 @@ KEYWORDS = [
 ]
 
 IGNORE_DOMAINS = [
-    "google.com", "ya.ru", "yandex.ru", "bing.com", "dzen.ru"
+    "google.com", "ya.ru", "yandex.ru", "bing.com", "dzen.ru", "youtube.com", "rutube.ru"
 ]
 
 HOSTS_PATH = r"C:\Windows\System32\drivers\etc\hosts"
@@ -103,25 +104,82 @@ def flush_dns():
         pass
 
 
-def kill_browser(browser: str) -> bool:
-    browser_tags = browser.lower().split()
+def setup_scheduler() -> bool:
+    """
+    Создаёт задачу в планировщике Windows.
+    Запуск при входе в систему, с правами администратора, без UAC.
+    Первый запуск скрипта — от имени администратора.
+    """
+    script_path = os.path.abspath(sys.argv[0])
+    task_name = "CasinoBlocker"
 
-    killed = False
+    if script_path.endswith(".py"):
+        pythonw = sys.executable.replace("python.exe", "pythonw.exe")
+        if not os.path.exists(pythonw):
+            pythonw = sys.executable
+        command = f'"{pythonw}" "{script_path}"'
+    else:
+        command = f'"{script_path}"'
 
-    for proc in psutil.process_iter(['name']):
-        try:
-            for tag in browser_tags:
-                if tag in proc.info['name'].lower():
-                    proc.kill()
-                    killed = True
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
-            continue
+    xml = f'''<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>Casino Blocker — блокировка сайтов казино</Description>
+  </RegistrationInfo>
+  <Triggers>
+    <LogonTrigger>
+      <Enabled>true</Enabled>
+    </LogonTrigger>
+  </Triggers>
+  <Principals>
+    <Principal>
+      <RunLevel>HighestAvailable</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <Enabled>true</Enabled>
+    <Hidden>false</Hidden>
+  </Settings>
+  <Actions>
+    <Exec>
+      <Command>{command}</Command>
+    </Exec>
+  </Actions>
+</Task>'''
 
-    return killed
+    xml_path = os.path.join(os.environ["TEMP"], "casino_blocker_task.xml")
+    with open(xml_path, "w", encoding="utf-16") as f:
+        f.write(xml)
+
+    subprocess.run(
+        ["schtasks", "/Delete", "/TN", task_name, "/F"],
+        capture_output=True,
+    )
+
+    result = subprocess.run(
+        ["schtasks", "/Create", "/TN", task_name, "/XML", xml_path],
+        capture_output=True,
+        text=True,
+    )
+
+    try:
+        os.remove(xml_path)
+    except OSError:
+        pass
+
+    return result.returncode == 0
 
 
 def block_casino(browser: str):
-    url = get_browser_url(browser)
+    try:
+        url = get_browser_url(browser)
+    except Exception:
+        return
+    
     domain = extract_domain(url)
 
     if not domain:
@@ -133,7 +191,6 @@ def block_casino(browser: str):
     if not is_domain_already_blocked(domain):
         add_domain_to_hosts(domain)
         flush_dns()
-        kill_browser(browser)
 
 
 def main():
@@ -154,4 +211,6 @@ def main():
 
 
 if __name__ == '__main__':
+    # Создаём/обновляем задачу в планировщике (нужны права администратора)
+    setup_scheduler()
     main()
