@@ -146,23 +146,13 @@ def setup_scheduler() -> bool:
     script_dir = os.path.dirname(script_path)
     task_name = "CasinoBlocker"
 
-    python_exe = sys.executable if script_path.endswith(".py") else script_path
-
-    # Bat-обёртка: пишет в лог ДО запуска Python — если лог есть, задача хотя бы стартовала
-    bat_path = os.path.join(script_dir, "run_casino_blocker.bat")
-    log_path = os.path.join(script_dir, "casino_blocker.log")
-    bat_content = f'''@echo off
-echo %date% %time% [BAT] Task started >> "{log_path}"
-cd /d "{script_dir}"
-"{python_exe}" "{script_path}" --console
-echo %date% %time% [BAT] Python exited >> "{log_path}"
-'''
-    with open(bat_path, "w", encoding="utf-8") as f:
-        f.write(bat_content)
-
-    # cmd /c — гарантированно есть в Windows, bat пишет лог до Python
-    command = "cmd.exe"
-    arguments = f'/c "{bat_path}"'
+    # Задача в Планировщике — python.exe + --console (видимое окно CMD)
+    if script_path.endswith(".py"):
+        command = sys.executable
+        arguments = f'"{script_path}" --console'
+    else:
+        command = script_path
+        arguments = "--console"
 
     # LogonType=InteractiveToken — задача в сессии пользователя (видит окна), НЕ в Session 0
     # Delay=PT30S — задержка 30 сек после входа, чтобы рабочий стол успел загрузиться
