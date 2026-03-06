@@ -39,22 +39,41 @@ def get_browser_url(browser: str):
     return url
 
 
-def extract_domain(url: str) -> str:
+def extract_domain(url: str) -> str | None:
     """
     'https://super-casino.com/play?id=1' → 'super-casino.com'
     'super-casino.com/play'              → 'super-casino.com'
+    Возвращает None для пустых, about:, chrome: и т.п.
     """
+    url = (url or "").strip()
+    if not url or url.startswith(("about:", "chrome:", "edge:", "file:", "view-source:")):
+        return None
     if not url.startswith("http"):
         url = "https://" + url
     parsed = urlparse(url)
-    return parsed.netloc
+    domain = parsed.netloc
+    return domain if domain else None
+
+
+def normalize_domain(domain: str) -> str:
+    """Убирает www. в начале, чтобы избежать www.www.domain.com."""
+    domain = domain.strip().lower()
+    while domain.startswith("www."):
+        domain = domain[4:]
+    return domain
 
 
 def is_domain_already_blocked(domain: str) -> bool:
-    """Проверяет, заблокирован ли домен уже."""
+    """Проверяет, заблокирован ли домен (с www и без)."""
+    domain = normalize_domain(domain)
+    if not domain:
+        return True
     with open(HOSTS_PATH, "r", encoding="utf-8") as f:
         content = f.read()
-    return f"127.0.0.1 {domain}" in content
+    return (
+        f"127.0.0.1 {domain}" in content
+        or f"127.0.0.1 www.{domain}" in content
+    )
 
 
 def add_domain_to_hosts(domain: str):
@@ -63,10 +82,12 @@ def add_domain_to_hosts(domain: str):
     # Убираем лишнее из домена
     domain = domain.strip().lower()
     if domain.startswith("http"):
-        from urllib.parse import urlparse
         domain = urlparse(domain).netloc
+    domain = normalize_domain(domain)
+    if not domain:
+        return
 
-    # Формируем строки для записи
+    # Формируем строки для записи (без дублирования www)
     lines = f"\n127.0.0.1 {domain}\n127.0.0.1 www.{domain}\n"
 
     # Дописываем в hosts
@@ -103,7 +124,10 @@ def block_casino(browser: str):
     url = get_browser_url(browser)
     domain = extract_domain(url)
 
-    if domain in IGNORE_DOMAINS:
+    if not domain:
+        return
+    domain_norm = normalize_domain(domain)
+    if domain_norm in IGNORE_DOMAINS:
         return
 
     if not is_domain_already_blocked(domain):
